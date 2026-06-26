@@ -1,0 +1,6 @@
+Welcome to project Luna
+Here is the file map:
+src/main.ts - Main process - Creates the browser window and handles browser-level events
+src/preload.ts - Preload script - security bridge between files and renderer so websites would not be able to access user files 
+src/renderer/index.html - Renderer process - The HTML for the browser window
+src/renderer/renderer.ts - Renderer process - The JavaScript for the browser window

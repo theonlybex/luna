@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-electron/
+
+# Bundled binaries (too large for git; produced by build scripts)
+*.exe
+*.dmg
+playwright-browsers/
+
+# Browser profile / runtime data (contains cookies, history, cache — never commit)
+.playwright-data/
+
+# Secrets
+.env
+.env.*
+
+# Local tooling state
+.claude/
+.worktrees/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db

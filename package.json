@@ -1,0 +1,63 @@
+{
+  "name": "luna",
+  "version": "1.0.0",
+  "description": "",
+  "main": "electron-main.js",
+  "scripts": {
+    "start": "tsc && node dist/app.js",
+    "electron:dev": "tsc && electron .",
+    "build:icons": "node scripts/build-icons.js",
+    "bundle:playwright": "node scripts/bundle-playwright.js",
+    "build:win": "tsc && electron-builder --win",
+    "build:mac": "tsc && electron-builder --mac"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "build": {
+    "appId": "com.luna.app",
+    "productName": "Luna",
+    "directories": {
+      "output": "dist-electron"
+    },
+    "files": [
+      "dist/**",
+      "electron-main.js",
+      "node_modules/**",
+      "build/icon.png"
+    ],
+    "extraResources": [
+      { "from": "playwright-browsers/", "to": "browsers/" },
+      { "from": "build/", "to": "build/" }
+    ],
+    "forceCodeSigning": false,
+    "win": {
+      "target": "nsis",
+      "icon": "build/icon.ico",
+      "signAndEditExecutable": false,
+      "signExts": []
+    },
+    "mac": {
+      "target": "dmg",
+      "icon": "build/icon.icns"
+    },
+    "nsis": {
+      "oneClick": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.89.0",
+    "playwright": "^1.59.1"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.2",
+    "electron": "^36.9.5",
+    "electron-builder": "^26.8.1",
+    "png2icons": "^2.0.1",
+    "ts-node": "^10.9.2",
+    "typescript": "^6.0.2"
+  }
+}
