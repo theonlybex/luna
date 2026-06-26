@@ -9,6 +9,7 @@ import fs from 'fs'
 import path from 'path'
 import { PlaywrightSession } from './browser/playwright-session'
 import { AgentManager } from './agents/agent-manager'
+import { RecordedAutomationManager } from './automation/recorded-automation-manager'
 import { getSettings, saveSettings } from './settings/settings-store'
 import { setApiKey, setApiKeys, setModel, setFallbackModel, testApiKey, parseUserIntent } from './agents/ai-client'
 
@@ -61,6 +62,10 @@ async function main(): Promise<void> {
 
     const session = new PlaywrightSession()
     const manager = new AgentManager(session, (items) => session.pushSidebarUpdate(items))
+    const recordedManager = new RecordedAutomationManager(
+        () => session.getActivePage(),
+        (event) => session.pushReplayStatus(event)
+    )
 
     const close = async () => { await session.close(); process.exit(0) }
     process.once('SIGINT',  close)
@@ -110,6 +115,10 @@ async function main(): Promise<void> {
         stopAgent: (id: string) => { manager.stopAgent(id) },
         pauseAgent:  (id: string)                      => { manager.pauseAgent(id) },
         resumeAgent: (id: string, correction?: string) => { manager.resumeAgent(id, correction) },
+        replayRecorded: (steps: any[], loop: boolean) => { recordedManager.start(steps, loop) },
+        pauseRecorded:  () => { recordedManager.pause() },
+        resumeRecorded: () => { recordedManager.resume() },
+        stopRecorded:   () => { recordedManager.stop() },
         sendChat: async (message: string) => {
             session.appendChat({ from: 'user', text: message })
             const intent = await parseUserIntent(message)

@@ -52,6 +52,11 @@ export interface LunaHandlers {
     stopAgent:        (id: string)    => void
     pauseAgent:  (id: string) => void
     resumeAgent: (id: string, correction?: string) => void
+    // Recorded-click automation replay (human-behavior engine)
+    replayRecorded: (steps: any[], loop: boolean) => void
+    pauseRecorded:  () => void
+    resumeRecorded: () => void
+    stopRecorded:   () => void
 }
 
 // ── PlaywrightSession ─────────────────────────────────────────────────────────
@@ -61,6 +66,7 @@ export class PlaywrightSession {
     private activePage:    Page           | null = null
     private httpServer:    http.Server    | null = null
     private sseClients:    http.ServerResponse[] = []
+    private lastReplayStatus: object | null = null
 
     private chatHistory: Array<{from: string, text: string}> = [
         { from: 'luna', text: "Hi! I'm Luna. Tell me what you'd like to do — search the web, find products, look up information, or set up repeating automations. Just ask in plain English." }
@@ -147,6 +153,8 @@ export class PlaywrightSession {
                         this.ok(res, this.chatHistory)
                     } else if (req.url === '/api/sidebar' && req.method === 'GET') {
                         this.ok(res, await handlers.getSidebarItems())
+                    } else if (req.url === '/api/replayStatus' && req.method === 'GET') {
+                        this.ok(res, this.lastReplayStatus ?? { status: 'idle' })
                     } else if (req.url === '/api/chat' && req.method === 'POST') {
                         const reply = await handlers.sendChat(data.text)
                         this.ok(res, { reply })
@@ -186,6 +194,18 @@ export class PlaywrightSession {
                     } else if (req.url === '/api/deleteAutomation' && req.method === 'POST') {
                         handlers.deleteAutomation(data.automationId)
                         this.ok(res, { ok: true })
+                    } else if (req.url === '/api/replayRecorded' && req.method === 'POST') {
+                        handlers.replayRecorded(data.steps || [], !!data.loop)
+                        this.ok(res, { ok: true })
+                    } else if (req.url === '/api/pauseRecorded' && req.method === 'POST') {
+                        handlers.pauseRecorded()
+                        this.ok(res, { ok: true })
+                    } else if (req.url === '/api/resumeRecorded' && req.method === 'POST') {
+                        handlers.resumeRecorded()
+                        this.ok(res, { ok: true })
+                    } else if (req.url === '/api/stopRecorded' && req.method === 'POST') {
+                        handlers.stopRecorded()
+                        this.ok(res, { ok: true })
                     } else {
                         res.writeHead(404); res.end()
                     }
@@ -223,6 +243,12 @@ export class PlaywrightSession {
 
     pushSidebarUpdate(items: SidebarItem[]): void {
         this.pushSSE({ type: 'sidebarUpdate', items })
+    }
+
+    // ── Push recorded-replay status via SSE + cache for GET /api/replayStatus ──
+    pushReplayStatus(event: object): void {
+        this.lastReplayStatus = event
+        this.pushSSE({ type: 'replayStatus', ...event })
     }
 
     pushThemeChange(_theme: string): void {}

@@ -664,6 +664,45 @@ backBtn.style.marginRight = '8px';
 backBtn.addEventListener('click', backToList);
 document.getElementById('auto-detail-hdr').insertBefore(backBtn, autoDetailName);
 
+// ─── Replay status UI (human-behavior replay in the Playwright instance) ──────
+
+const replayStatusEl = document.createElement('div');
+replayStatusEl.id = 'replay-status';
+replayStatusEl.style.cssText = 'display:none;font-size:12px;padding:8px 12px;margin-top:8px;border-radius:8px;background:rgba(99,102,241,0.12);color:#c7d2fe;line-height:1.45;';
+autoDetail.appendChild(replayStatusEl);
+
+const resumeBtn = document.createElement('button');
+resumeBtn.className = 'detail-btn';
+resumeBtn.textContent = 'Resume';
+resumeBtn.style.display = 'none';
+resumeBtn.addEventListener('click', () => {
+  if (!selectedAutoId) return;
+  chrome.runtime.sendMessage({ type: 'resumeAutomation', id: selectedAutoId });
+  resumeBtn.style.display = 'none';
+});
+stopPlayBtn.parentNode.insertBefore(resumeBtn, stopPlayBtn.nextSibling);
+
+function renderReplayStatus(s) {
+  if (!s || s.status === 'idle') { replayStatusEl.style.display = 'none'; resumeBtn.style.display = 'none'; return; }
+  const step = (s.stepIndex ?? 0) + 1;
+  const total = s.totalSteps ?? 0;
+  const loop = s.iteration > 1 ? ` · loop ${s.iteration}` : '';
+  let txt = '';
+  if (s.status === 'running')             txt = `▶ Running step ${step}/${total}${loop}${s.stepDescription ? ' — ' + esc(s.stepDescription) : ''}`;
+  else if (s.status === 'paused-on-step') txt = `⏸ Paused on step ${step}/${total} — ${esc(s.reason || 'verification failed')}`;
+  else if (s.status === 'failed')         txt = `✕ Failed: ${esc(s.reason || '')}`;
+  else if (s.status === 'done')           txt = '✓ Done';
+  else if (s.status === 'stopped')        txt = '■ Stopped';
+  replayStatusEl.innerHTML = txt;
+  replayStatusEl.style.display = 'block';
+
+  const active = s.status === 'running' || s.status === 'paused-on-step';
+  resumeBtn.style.display = s.status === 'paused-on-step' ? 'inline-flex' : 'none';
+  playBtn.style.display = active ? 'none' : 'flex';
+  stopPlayBtn.style.display = active ? 'flex' : 'none';
+  if (!active) setTimeout(() => { replayStatusEl.style.display = 'none'; }, 4000);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // MESSAGE LISTENER — push updates from background
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -671,6 +710,9 @@ document.getElementById('auto-detail-hdr').insertBefore(backBtn, autoDetailName)
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === 'agentUpdate') {
     renderAgents(msg.agents);
+  }
+  if (msg.type === 'replayStatus') {
+    if (currentView === 'automations' && selectedAutoId) renderReplayStatus(msg);
   }
   if (msg.type === 'automationUpdate') {
     automations = msg.automations || [];

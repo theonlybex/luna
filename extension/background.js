@@ -666,6 +666,62 @@ let recordingName = '';
 let runningAutomationId = null;
 let automationStopped = false;
 
+// ─── Luna server bridge (human-behavior replay in the Playwright instance) ────
+// When the Electron/Playwright server is running, recorded automations replay
+// there (separate browser instance, trusted input, step verification) instead
+// of the in-extension dispatchEvent playback.
+const LUNA_SERVER = 'http://127.0.0.1:38412';
+let serverRunActive = false;
+let replayPollTimer = null;
+
+async function lunaServerReachable() {
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 800);
+    const res = await fetch(`${LUNA_SERVER}/api/settings`, { signal: ctrl.signal });
+    clearTimeout(t);
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+function postServer(path, body) {
+  return fetch(`${LUNA_SERVER}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body || {}),
+  }).catch(() => {});
+}
+
+function stopReplayPolling() {
+  if (replayPollTimer) { clearInterval(replayPollTimer); replayPollTimer = null; }
+}
+
+function startReplayPolling(auto) {
+  stopReplayPolling();
+  replayPollTimer = setInterval(async () => {
+    let status;
+    try {
+      const res = await fetch(`${LUNA_SERVER}/api/replayStatus`);
+      status = await res.json();
+    } catch { return; }
+    if (!status || status.status === 'idle') return;
+
+    // Relay to the side panel so it can show progress / paused / failed.
+    chrome.runtime.sendMessage({ type: 'replayStatus', ...status }).catch(() => {});
+
+    const finished = status.status === 'done' || status.status === 'stopped';
+    auto.isRunning = !finished;
+    if (finished) {
+      serverRunActive = false;
+      runningAutomationId = null;
+      stopReplayPolling();
+      broadcastAutomations();
+    }
+  }, 700);
+}
+
 async function loadAutomations() {
   const { lunaAutomations } = await chrome.storage.local.get('lunaAutomations');
   automations = lunaAutomations || [];
@@ -751,6 +807,30 @@ async function executeStepWithRetry(tabId, step, maxAttempts = 3) {
 async function playAutomation(id) {
   const auto = automations.find(a => a.id === id);
   if (!auto || auto.isRunning) return;
+
+  // Prefer the Playwright instance (separate browser, no banner, trusted input,
+  // human-behavior + step verification). Fall back to in-extension playback.
+  if (await lunaServerReachable()) {
+    auto.isRunning = true;
+    runningAutomationId = id;
+    serverRunActive = true;
+    automationStopped = false;
+    broadcastAutomations();
+
+    const steps = auto.startUrl
+      ? [{ type: 'navigate', url: auto.startUrl }, ...auto.steps]
+      : auto.steps;
+    await postServer('/api/replayRecorded', { steps, loop: !!auto.loopEnabled });
+    startReplayPolling(auto);
+    return;
+  }
+
+  return playInExtension(id);
+}
+
+async function playInExtension(id) {
+  const auto = automations.find(a => a.id === id);
+  if (!auto || auto.isRunning) return;
   auto.isRunning = true;
   runningAutomationId = id;
   automationStopped = false;
@@ -809,9 +889,23 @@ async function playAutomation(id) {
 
 function stopAutomationPlayback(id) {
   automationStopped = true;
+  if (serverRunActive) {
+    postServer('/api/stopRecorded', {});
+    serverRunActive = false;
+    runningAutomationId = null;
+    stopReplayPolling();
+  }
   const auto = automations.find(a => a.id === id);
   if (auto) auto.isRunning = false;
   broadcastAutomations();
+}
+
+function pauseAutomationPlayback(id) {
+  if (serverRunActive) postServer('/api/pauseRecorded', {});
+}
+
+function resumeAutomationPlayback(id) {
+  if (serverRunActive) postServer('/api/resumeRecorded', {});
 }
 
 function deleteAutomation(id) {
@@ -917,6 +1011,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return false;
     case 'stopAutomation':
       stopAutomationPlayback(msg.id);
+      sendResponse({ ok: true });
+      return false;
+    case 'pauseAutomation':
+      pauseAutomationPlayback(msg.id);
+      sendResponse({ ok: true });
+      return false;
+    case 'resumeAutomation':
+      resumeAutomationPlayback(msg.id);
       sendResponse({ ok: true });
       return false;
     case 'deleteAutomation':
