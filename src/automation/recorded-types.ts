@@ -22,6 +22,8 @@ export interface RecordedStep {
     y?: number
     // Payloads
     value?: string        // type / select
+    sensitive?: boolean   // type into a password/secret field — value is NOT captured
+    editable?: boolean    // contenteditable target (verify via textContent, not value)
     label?: string        // select option text
     key?: string          // keypress
     scrollX?: number      // scroll

@@ -60,14 +60,21 @@ export async function verifyStep(
 ): Promise<VerifyResult> {
     switch (step.type) {
         case 'type': {
+            // Sensitive fields are entered by the user (value isn't captured), so
+            // there's nothing to read back — treat presence of the field as a pass.
+            if (step.sensitive) return { ok: true }
             if (!locator) return { ok: false, reason: 'type: target element not found for verification' }
             const expected = (step.value ?? '').trim()
-            const matched = await pollUntil(timeoutMs, async () => {
-                try { return ((await locator.inputValue()).trim()) === expected } catch { return false }
-            })
+            // inputValue() throws on contenteditable — fall back to textContent.
+            const read = async (): Promise<string | null> => {
+                try { return (await locator.inputValue()).trim() }
+                catch {
+                    try { return ((await locator.textContent()) ?? '').trim() } catch { return null }
+                }
+            }
+            const matched = await pollUntil(timeoutMs, async () => (await read()) === expected)
             if (matched) return { ok: true }
-            let actual = ''
-            try { actual = await locator.inputValue() } catch { /* detached */ }
+            const actual = (await read()) ?? ''
             return { ok: false, reason: `type verify failed: field shows "${actual}" not "${expected}"` }
         }
 

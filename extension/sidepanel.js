@@ -567,6 +567,10 @@ function updateRecordingUI(data) {
     recordBtn.classList.add('recording');
     recordBtn.innerHTML = '<span class="rec-dot"></span> Recording...';
 
+    // Show the captured start URL
+    const urlEl = document.getElementById('recording-url');
+    if (urlEl) urlEl.textContent = data.recordingStartUrl || 'No URL captured';
+
     // Show live steps
     recordingStepsEl.innerHTML = '';
     const ICONS = { click: '👆', type: '⌨️', keypress: '⏎', scroll: '↕️', navigate: '🌐', select: '📋', hover: '🖱️', extract: '📤' };
@@ -619,6 +623,7 @@ playBtn.addEventListener('click', () => {
   chrome.runtime.sendMessage({ type: 'playAutomation', id: selectedAutoId });
   playBtn.style.display = 'none';
   stopPlayBtn.style.display = 'flex';
+  pausePlayBtn.style.display = 'inline-flex';
 });
 
 stopPlayBtn.addEventListener('click', () => {
@@ -626,6 +631,8 @@ stopPlayBtn.addEventListener('click', () => {
   chrome.runtime.sendMessage({ type: 'stopAutomation', id: selectedAutoId });
   playBtn.style.display = 'flex';
   stopPlayBtn.style.display = 'none';
+  pausePlayBtn.style.display = 'none';
+  resumeBtn.style.display = 'none';
 });
 
 delAutoBtn.addEventListener('click', () => {
@@ -671,6 +678,17 @@ replayStatusEl.id = 'replay-status';
 replayStatusEl.style.cssText = 'display:none;font-size:12px;padding:8px 12px;margin-top:8px;border-radius:8px;background:rgba(99,102,241,0.12);color:#c7d2fe;line-height:1.45;';
 autoDetail.appendChild(replayStatusEl);
 
+const pausePlayBtn = document.createElement('button');
+pausePlayBtn.className = 'detail-btn';
+pausePlayBtn.textContent = '⏸ Pause';
+pausePlayBtn.style.display = 'none';
+pausePlayBtn.addEventListener('click', () => {
+  if (!selectedAutoId) return;
+  chrome.runtime.sendMessage({ type: 'pauseAutomation', id: selectedAutoId });
+  pausePlayBtn.style.display = 'none';
+});
+stopPlayBtn.parentNode.insertBefore(pausePlayBtn, stopPlayBtn.nextSibling);
+
 const resumeBtn = document.createElement('button');
 resumeBtn.className = 'detail-btn';
 resumeBtn.textContent = 'Resume';
@@ -679,28 +697,32 @@ resumeBtn.addEventListener('click', () => {
   if (!selectedAutoId) return;
   chrome.runtime.sendMessage({ type: 'resumeAutomation', id: selectedAutoId });
   resumeBtn.style.display = 'none';
+  pausePlayBtn.style.display = 'inline-flex';
 });
-stopPlayBtn.parentNode.insertBefore(resumeBtn, stopPlayBtn.nextSibling);
+pausePlayBtn.parentNode.insertBefore(resumeBtn, pausePlayBtn.nextSibling);
 
 function renderReplayStatus(s) {
-  if (!s || s.status === 'idle') { replayStatusEl.style.display = 'none'; resumeBtn.style.display = 'none'; return; }
+  if (!s || s.status === 'idle') { replayStatusEl.style.display = 'none'; resumeBtn.style.display = 'none'; pausePlayBtn.style.display = 'none'; return; }
   const step = (s.stepIndex ?? 0) + 1;
   const total = s.totalSteps ?? 0;
   const loop = s.iteration > 1 ? ` · loop ${s.iteration}` : '';
+  const warn = s.degraded ? '⚠ ' : '';
   let txt = '';
-  if (s.status === 'running')             txt = `▶ Running step ${step}/${total}${loop}${s.stepDescription ? ' — ' + esc(s.stepDescription) : ''}`;
+  if (s.status === 'basic-mode')          txt = `⚠ Basic playback — Luna app not running. No human-motion, step verification, or Claude auto-heal.`;
+  else if (s.status === 'running')        txt = `${warn}▶ Running step ${step}/${total}${loop}${s.stepDescription ? ' — ' + esc(s.stepDescription) : ''}`;
   else if (s.status === 'paused-on-step') txt = `⏸ Paused on step ${step}/${total} — ${esc(s.reason || 'verification failed')}`;
   else if (s.status === 'failed')         txt = `✕ Failed: ${esc(s.reason || '')}`;
-  else if (s.status === 'done')           txt = '✓ Done';
-  else if (s.status === 'stopped')        txt = '■ Stopped';
+  else if (s.status === 'done')           txt = `${warn}✓ Done`;
+  else if (s.status === 'stopped')        txt = `${warn}■ Stopped`;
   replayStatusEl.innerHTML = txt;
   replayStatusEl.style.display = 'block';
 
-  const active = s.status === 'running' || s.status === 'paused-on-step';
+  const active = s.status === 'running' || s.status === 'paused-on-step' || s.status === 'basic-mode';
   resumeBtn.style.display = s.status === 'paused-on-step' ? 'inline-flex' : 'none';
+  pausePlayBtn.style.display = s.status === 'running' ? 'inline-flex' : 'none';
   playBtn.style.display = active ? 'none' : 'flex';
   stopPlayBtn.style.display = active ? 'flex' : 'none';
-  if (!active) setTimeout(() => { replayStatusEl.style.display = 'none'; }, 4000);
+  if (!active) setTimeout(() => { replayStatusEl.style.display = 'none'; pausePlayBtn.style.display = 'none'; }, 4000);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

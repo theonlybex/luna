@@ -711,7 +711,7 @@ function startReplayPolling(auto) {
     // Relay to the side panel so it can show progress / paused / failed.
     chrome.runtime.sendMessage({ type: 'replayStatus', ...status }).catch(() => {});
 
-    const finished = status.status === 'done' || status.status === 'stopped';
+    const finished = status.status === 'done' || status.status === 'stopped' || status.status === 'failed';
     auto.isRunning = !finished;
     if (finished) {
       serverRunActive = false;
@@ -741,7 +741,7 @@ async function startRecording(tabId) {
   recordingSteps = [];
   try {
     const tab = await chrome.tabs.get(tabId);
-    recordingStartUrl = (tab.url && !tab.url.startsWith('chrome')) ? tab.url : null;
+    recordingStartUrl = (tab.url && !tab.url.startsWith('chrome://') && !tab.url.startsWith('chrome-extension://')) ? tab.url : null;
   } catch {
     recordingStartUrl = null;
   }
@@ -749,10 +749,19 @@ async function startRecording(tabId) {
   broadcastAutomations();
 }
 
-function stopRecording(name) {
+async function stopRecording(name) {
   isRecording = false;
   if (recordingTabId) {
     chrome.tabs.sendMessage(recordingTabId, { type: 'stopRecording' }).catch(() => {});
+    // Re-capture URL from tab if we don't have one yet
+    if (!recordingStartUrl) {
+      try {
+        const tab = await chrome.tabs.get(recordingTabId);
+        if (tab.url && !tab.url.startsWith('chrome://') && !tab.url.startsWith('chrome-extension://')) {
+          recordingStartUrl = tab.url;
+        }
+      } catch { /* tab may be gone */ }
+    }
   }
   if (recordingSteps.length > 0) {
     const automation = {
@@ -836,6 +845,14 @@ async function playInExtension(id) {
   automationStopped = false;
   broadcastAutomations();
 
+  // Non-silent degradation: the Luna app isn't running, so this fallback path
+  // has no human-like motion, no step verification, and no Claude auto-heal.
+  // Surface that to the panel rather than silently playing back "basic" clicks.
+  const total = auto.steps.length;
+  const emitStatus = (status, stepIndex, reason) =>
+    chrome.runtime.sendMessage({ type: 'replayStatus', status, stepIndex, totalSteps: total, degraded: true, reason }).catch(() => {});
+  emitStatus('basic-mode', 0);
+
   if (auto.startUrl) {
     const tabId = await getActiveTabId();
     if (tabId) {
@@ -848,10 +865,12 @@ async function playInExtension(id) {
   const ELEMENT_STEPS = new Set(['click', 'type', 'select', 'hover', 'extract']);
 
   do {
-    for (const step of auto.steps) {
+    for (let idx = 0; idx < auto.steps.length; idx++) {
+      const step = auto.steps[idx];
       if (automationStopped) break;
       const tabId = await getActiveTabId();
       if (!tabId) break;
+      emitStatus('running', idx);
 
       if (step.type === 'navigate') {
         await chrome.tabs.update(tabId, { url: step.url });
@@ -884,6 +903,7 @@ async function playInExtension(id) {
 
   auto.isRunning = false;
   runningAutomationId = null;
+  emitStatus(automationStopped ? 'stopped' : 'done', Math.max(0, total - 1));
   broadcastAutomations();
 }
 
@@ -1002,9 +1022,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       getActiveTabId().then(tabId => { if (tabId) startRecording(tabId); sendResponse({ ok: true }); });
       return true;
     case 'stopRecording':
-      stopRecording(msg.name);
-      sendResponse({ ok: true });
-      return false;
+      stopRecording(msg.name).then(() => sendResponse({ ok: true }));
+      return true;
     case 'playAutomation':
       playAutomation(msg.id);
       sendResponse({ ok: true });

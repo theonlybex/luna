@@ -85,9 +85,9 @@ const THINK_DEFAULT = 500
  * is available or it's implausible.
  */
 export function thinkTime(recordedGapMs?: number): number {
-    const base = recordedGapMs && recordedGapMs > 0 && recordedGapMs < 10000
-        ? recordedGapMs
-        : THINK_DEFAULT
+    // Honor the recorded gap when present; very long idle pauses are reined in
+    // by the final clamp to THINK_MAX rather than discarded down to the default.
+    const base = recordedGapMs && recordedGapMs > 0 ? recordedGapMs : THINK_DEFAULT
     const jittered = base * Math.exp(gaussian() * 0.25)
     return Math.round(clamp(jittered, THINK_MIN, THINK_MAX))
 }

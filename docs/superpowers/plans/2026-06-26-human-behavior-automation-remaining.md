@@ -33,16 +33,16 @@
 - [ ] Confirm loop-until-stopped works with the loop checkbox on
 
 ### 2. Bridge robustness — MEDIUM
-- [ ] Confirm `lunaServerReachable()` correctly detects server up/down (fallback to
+- [x] Confirm `lunaServerReachable()` correctly detects server up/down (fallback to
       in-extension playback when the server isn't running)
-- [ ] Confirm status poll stops cleanly on done/stopped (no leaked interval)
-- [ ] Confirm `getActivePage()` targets the tab the user is actually on at Play time
-- [ ] Decide behavior when the recorded automation spans multiple tabs/navigations
+- [x] Confirm status poll stops cleanly on done/stopped (no leaked interval)
+- [x] Confirm `getActivePage()` targets the tab the user is actually on at Play time
+- [x] Decide behavior when the recorded automation spans multiple tabs/navigations
 
 ### 3. Optional: manual pause button — LOW
-- [ ] Add a Pause button to the automation detail view (handler `pauseAutomation`
+- [x] Add a Pause button to the automation detail view (handler `pauseAutomation`
       already exists in background.js; only the UI control is missing)
-- [ ] Wire Resume to also cover manual pause (already routes `resumeAutomation`)
+- [x] Wire Resume to also cover manual pause (already routes `resumeAutomation`)
 
 ### 4. Anti-bot reality check — MEDIUM (do after #1)
 - [ ] Test replay against a real protected site (Cloudflare Turnstile / DataDome demo)

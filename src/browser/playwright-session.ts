@@ -96,6 +96,25 @@ export class PlaywrightSession {
 
         this.activePage = await this.browseContext.newPage()
         await this.activePage.goto(homepage)
+
+        // Track active page: update when new pages open, fall back when pages close
+        this.browseContext.on('page', (page) => {
+            this.activePage = page
+            page.on('close', () => {
+                if (this.activePage === page) {
+                    const pages = this.browseContext?.pages() ?? []
+                    this.activePage = pages.length > 0 ? pages[pages.length - 1] : null
+                }
+            })
+        })
+
+        // Also track close on the initial page
+        this.activePage.on('close', () => {
+            if (this.activePage?.isClosed()) {
+                const pages = this.browseContext?.pages() ?? []
+                this.activePage = pages.length > 0 ? pages[pages.length - 1] : null
+            }
+        })
     }
 
     // ── HTTP server ───────────────────────────────────────────────────────────
@@ -247,8 +266,13 @@ export class PlaywrightSession {
 
     // ── Push recorded-replay status via SSE + cache for GET /api/replayStatus ──
     pushReplayStatus(event: object): void {
-        this.lastReplayStatus = event
         this.pushSSE({ type: 'replayStatus', ...event })
+        // SSE clients already received the real terminal event; reset the cached
+        // value so a panel that loads /api/replayStatus later sees 'idle' rather
+        // than a stale 'done'/'stopped'/'failed' from a finished run.
+        const status = (event as { status?: string }).status
+        const terminal = status === 'done' || status === 'stopped' || status === 'failed'
+        this.lastReplayStatus = terminal ? { status: 'idle' } : event
     }
 
     pushThemeChange(_theme: string): void {}

@@ -56,7 +56,7 @@ export class RecordedReplayEngine {
             iteration++
             for (let i = 0; i < steps.length; i++) {
                 if (this.stopped) { this.emit('stopped', i, steps, iteration); return }
-                await this.waitIfPaused()
+                await this.waitIfPaused(i, steps, iteration)
                 if (this.stopped) { this.emit('stopped', i, steps, iteration); return }
 
                 const step = steps[i]
@@ -64,6 +64,17 @@ export class RecordedReplayEngine {
                 await sleep(thinkTime(gap))
 
                 this.emit('running', i, steps, iteration)
+
+                // Sensitive fields aren't captured (no stored secret). Pause so the
+                // user types the value into the real browser, then Resume to skip
+                // the automated type and continue with the rest of the sequence.
+                if (step.type === 'type' && step.sensitive) {
+                    this.paused = true
+                    this.emit('paused-on-step', i, steps, iteration, 'Sensitive field — enter the value manually, then Resume')
+                    await this.waitIfPaused()
+                    if (this.stopped) { this.emit('stopped', i, steps, iteration); return }
+                    continue
+                }
 
                 let done = false
                 while (!done && !this.stopped) {
@@ -83,7 +94,14 @@ export class RecordedReplayEngine {
         this.emit('done', steps.length, steps, iteration)
     }
 
-    private async waitIfPaused(): Promise<void> {
+    private async waitIfPaused(stepIndex?: number, steps?: RecordedStep[], iteration?: number): Promise<void> {
+        if (!this.paused || this.stopped) return
+        // Emit paused status if context is provided and no status was already emitted
+        // (failure-pause emits before calling waitIfPaused; manual pause does not)
+        if (stepIndex !== undefined && steps && iteration !== undefined) {
+            // Only emit if the current status isn't already paused-on-step (avoid double-emit on failure)
+            this.emit('paused-on-step', stepIndex, steps, iteration, 'Paused by user')
+        }
         while (this.paused && !this.stopped) await sleep(250)
     }
 
@@ -135,12 +153,19 @@ export class RecordedReplayEngine {
 
         const label = labelOf(step)
         if (label) {
+            const role = this.guessRole(step.tagName)
+            // Prefer specific, unambiguous matches. A broad first()-of-many can
+            // silently click the wrong element (the lenient click verify won't
+            // catch it), so only accept a candidate that resolves to exactly one
+            // node. Ambiguity returns null → the step fails → recovery/pause.
             const candidates: Locator[] = [
-                page.getByRole(this.guessRole(step.tagName), { name: label }),
+                page.getByRole(role, { name: label, exact: true }),
+                page.getByRole(role, { name: label }),
+                page.getByText(label, { exact: true }),
                 page.getByText(label, { exact: false }),
             ]
             for (const c of candidates) {
-                try { const f = c.first(); if ((await f.count()) > 0) return f } catch { /* try next */ }
+                try { if ((await c.count()) === 1) return c.first() } catch { /* try next */ }
             }
         }
         return null
@@ -166,13 +191,14 @@ export class RecordedReplayEngine {
             case 'hover':    return this.actHover(page, step, locator)
             case 'keypress': { if (step.key) await page.keyboard.press(this.keyName(step.key)); return }
             case 'scroll':   return this.actScroll(page, step)
-            case 'navigate': { if (step.url) await page.goto(step.url, { waitUntil: 'domcontentloaded' }); return }
+            case 'navigate': { if (step.url) await page.goto(step.url, { waitUntil: 'domcontentloaded', timeout: 20000 }); return }
             case 'extract':  return this.actExtract(step, locator, vars)
         }
     }
 
     private async moveMouseTo(page: Page, target: Point): Promise<void> {
         for (const p of bezierPath(this.mouse, target)) {
+            if (this.stopped) return
             await page.mouse.move(p.x, p.y)
             await sleep(rand(4, 14))
         }
@@ -187,8 +213,20 @@ export class RecordedReplayEngine {
                 if (box) { await this.moveMouseTo(page, landingPoint(box)); return true }
             } catch { /* fall back to recorded coords */ }
         }
-        if (fallbackX != null && fallbackY != null) { await this.moveMouseTo(page, { x: fallbackX, y: fallbackY }); return true }
+        // Recorded coords are in the recording window's space; only trust them if
+        // they still fall inside this window (it may be a different size).
+        if (fallbackX != null && fallbackY != null && await this.coordsInViewport(page, fallbackX, fallbackY)) {
+            await this.moveMouseTo(page, { x: fallbackX, y: fallbackY }); return true
+        }
         return false
+    }
+
+    private async coordsInViewport(page: Page, x: number, y: number): Promise<boolean> {
+        if (x < 0 || y < 0) return false
+        try {
+            const size = await page.evaluate(() => ({ w: window.innerWidth, h: window.innerHeight }))
+            return x <= size.w && y <= size.h
+        } catch { return false }
     }
 
     private async actClick(page: Page, step: RecordedStep, locator: Locator | null): Promise<void> {
@@ -208,12 +246,25 @@ export class RecordedReplayEngine {
         if (!locator) throw new Error('type: could not resolve target field')
         await this.pointerTo(page, locator)
         await page.mouse.down(); await page.mouse.up()
-        try { await locator.fill('') } catch { /* non-fillable — continue */ }
+        await this.clearField(page, locator)
         const text = interpolate(step.value ?? '', vars)
         for (const ch of text) {
+            if (this.stopped) return
             await page.keyboard.type(ch)
             await sleep(keystrokeDelay())
         }
+    }
+
+    /** Clear a field's existing content, covering inputs and contenteditable. */
+    private async clearField(page: Page, locator: Locator): Promise<void> {
+        try {
+            await locator.fill('')
+            if ((await locator.inputValue().catch(() => '')) === '') return
+        } catch { /* not a fillable input (e.g. contenteditable) — fall through */ }
+        try {
+            await page.keyboard.press('ControlOrMeta+A')
+            await page.keyboard.press('Delete')
+        } catch { /* best effort */ }
     }
 
     private async actHover(page: Page, step: RecordedStep, locator: Locator | null): Promise<void> {
@@ -226,13 +277,17 @@ export class RecordedReplayEngine {
         if (Math.abs(delta) < 4) return
         const ticks = scrollTicks(delta)
         for (let i = 0; i < ticks; i++) {
+            if (this.stopped) return
             await page.mouse.wheel(0, delta / ticks)
             await sleep(rand(30, 90))
         }
     }
 
     private async actExtract(step: RecordedStep, locator: Locator | null, vars: Record<string, string>): Promise<void> {
-        if (!locator || !step.variable) return
+        if (!step.variable) return
+        // Surface an unresolved source rather than silently leaving the variable
+        // empty (which would interpolate to "" downstream and pass verification).
+        if (!locator) throw new Error(`extract: could not resolve source for "${step.variable}"`)
         let value = ''
         try {
             value = await locator.inputValue()

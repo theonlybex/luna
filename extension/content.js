@@ -269,8 +269,27 @@
 
   // ─── CSS Selector Generator ─────────────────────────────────────────────────
 
+  // Escape a value for use inside an [attr="..."] selector.
+  function cssAttrVal(v) { return String(v).replace(/(["\\])/g, '\\$1'); }
+  function uniqueSelector(sel) {
+    try { return document.querySelectorAll(sel).length === 1; } catch { return false; }
+  }
+
   function getSelector(el) {
-    if (el.id) return `#${CSS.escape(el.id)}`;
+    // Prefer stable, semantic anchors that survive redesigns and rebuilds, and
+    // only accept them when they resolve to exactly one node. Falls back to the
+    // structural nth-of-type/class chain below.
+    for (const attr of ['data-testid', 'data-test', 'data-cy', 'data-qa']) {
+      const v = el.getAttribute(attr);
+      if (v) { const s = `[${attr}="${cssAttrVal(v)}"]`; if (uniqueSelector(s)) return s; }
+    }
+    if (el.id) { const s = `#${CSS.escape(el.id)}`; if (uniqueSelector(s)) return s; }
+    const tag = el.tagName.toLowerCase();
+    const name = el.getAttribute('name');
+    if (name) { const s = `${tag}[name="${cssAttrVal(name)}"]`; if (uniqueSelector(s)) return s; }
+    const aria = el.getAttribute('aria-label');
+    if (aria) { const s = `${tag}[aria-label="${cssAttrVal(aria)}"]`; if (uniqueSelector(s)) return s; }
+
     const parts = [];
     let cur = el;
     while (cur && cur !== document.body && parts.length < 5) {
@@ -353,11 +372,36 @@
   let scrollTimer = null;
   let hoverTimer = null;
   let hoverTarget = null;
-  const inputDebounceTimers = new Map();
+  const inputDebounceTimers = new Map();   // el -> timeout id
+  const inputPendingEmit = new Map();      // el -> () => void (emit the type step now)
+
+  // Heuristic for fields whose values must never be recorded/stored.
+  const SENSITIVE_RE = /pass|pwd|secret|cvv|cvc|card-?num|ccnum|ssn|\botp\b|\bpin\b|security-?code/i;
+  function isSensitiveField(el) {
+    if (el.type === 'password') return true;
+    const ac = (el.getAttribute('autocomplete') || '').toLowerCase();
+    if (/cc-number|cc-csc|current-password|new-password|one-time-code/.test(ac)) return true;
+    const meta = `${el.name || ''} ${el.id || ''} ${el.getAttribute('aria-label') || ''} ${el.getAttribute('placeholder') || ''}`;
+    return SENSITIVE_RE.test(meta);
+  }
+  function fieldValue(el) {
+    return el.isContentEditable ? (el.textContent || '') : ('value' in el ? el.value : '');
+  }
+
+  // Flush any debounced `type` steps immediately, so their order relative to a
+  // click/keypress/change isn't inverted by the 600ms input debounce.
+  function flushPendingInputs() {
+    for (const el of [...inputDebounceTimers.keys()]) {
+      clearTimeout(inputDebounceTimers.get(el));
+      const emit = inputPendingEmit.get(el);
+      if (emit) emit();
+    }
+  }
 
   function onRecordClick(e) {
     if (e.target.closest('#__luna-rec-overlay')) return;
     if (e.target.tagName === 'SELECT' || e.target.closest('select')) return;
+    flushPendingInputs();
     const step = {
       type: 'click',
       x: e.clientX,
@@ -373,27 +417,35 @@
 
   function onRecordInput(e) {
     const el = e.target;
-    if (!('value' in el)) return;
+    const editable = el.isContentEditable;
+    if (!('value' in el) && !editable) return;
     if (inputDebounceTimers.has(el)) clearTimeout(inputDebounceTimers.get(el));
-    const timer = setTimeout(() => {
+    const emit = () => {
       inputDebounceTimers.delete(el);
+      inputPendingEmit.delete(el);
+      const sensitive = isSensitiveField(el);
       const step = {
         type: 'type',
         selector: getSelector(el),
-        value: el.value,
+        // Never persist secrets; the user re-enters them at replay time.
+        value: sensitive ? '' : fieldValue(el),
         tagName: el.tagName.toLowerCase(),
         timestamp: Date.now(),
-        description: `Type into "${el.getAttribute('placeholder') || el.getAttribute('name') || el.tagName.toLowerCase()}"`,
+        description: `Type into "${el.getAttribute('placeholder') || el.getAttribute('name') || el.getAttribute('aria-label') || el.tagName.toLowerCase()}"`,
         delay: 300,
       };
+      if (sensitive) step.sensitive = true;
+      if (editable) step.editable = true;
       chrome.runtime.sendMessage({ type: 'recordedStep', step });
-    }, 600);
-    inputDebounceTimers.set(el, timer);
+    };
+    inputPendingEmit.set(el, emit);
+    inputDebounceTimers.set(el, setTimeout(emit, 600));
   }
 
   function onRecordChange(e) {
     const el = e.target;
     if (el.tagName !== 'SELECT') return;
+    flushPendingInputs();
     const selected = el.options[el.selectedIndex];
     const step = {
       type: 'select',
@@ -431,6 +483,9 @@
 
   function onRecordKeydown(e) {
     if (!['Enter', 'Tab', 'Escape'].includes(e.key)) return;
+    // Emit the field's pending `type` step before this keypress so the order is
+    // [type, Enter] — not [Enter, type] when the user hits Enter immediately.
+    flushPendingInputs();
     const step = {
       type: 'keypress',
       key: e.key,
@@ -509,8 +564,10 @@
     document.removeEventListener('keydown',   onRecordKeydown, true);
     document.removeEventListener('scroll',    onRecordScroll,  true);
     document.removeEventListener('mouseover', onRecordHover,   true);
+    flushPendingInputs();
     inputDebounceTimers.forEach(t => clearTimeout(t));
     inputDebounceTimers.clear();
+    inputPendingEmit.clear();
     clearTimeout(hoverTimer);
     hoverTarget = null;
     hideRecordingOverlay();
@@ -544,7 +601,13 @@
         }
         case 'type': {
           const el = findElement(step);
-          if (el && 'value' in el) {
+          if (!el) break;
+          if (step.sensitive) break;   // never auto-fill secrets — user enters them
+          if (el.isContentEditable) {
+            el.focus();
+            el.textContent = step.value || '';
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+          } else if ('value' in el) {
             el.focus();
             el.value = '';
             el.dispatchEvent(new Event('input', { bubbles: true }));
